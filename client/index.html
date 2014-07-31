@@ -1,0 +1,827 @@
+<html>
+<head>
+
+<!-- http://jquery.com/ -->
+<script type="text/javascript" src="ext/jquery.min.js"></script>
+<!-- http://jqueryui.com/ -->
+<script type="text/javascript" src="ext/jquery-ui.min.js"></script>
+<!-- http://touchpunch.furf.com/ -->
+<script type="text/javascript" src="ext/jquery.ui.touch-punch.min.js"></script>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<style type="text/css">
+@font-face {
+	font-family : Ubuntu;
+	font-style  : normal;
+	font-weight : 400;
+	src: local('Ubuntu'), url('fonts/Ubuntu-400.woff');
+}
+
+@font-face {
+	font-family : Ubuntu;
+	font-style  : normal;
+	font-weight : 700;
+	src: local('Ubuntu Bold'), url('fonts/Ubuntu-700.woff');
+}
+
+@font-face {
+	font-family : Lato;
+	font-style  : normal;
+	font-weight : 400;
+	src: local('Lato Regular'), url('fonts/Lato-400.woff');
+}
+
+@font-face {
+	font-family : Lato;
+	font-style  : normal;
+	font-weight : 700;
+	src: local('Lato Bold'), url('fonts/Lato-700.woff');
+}
+
+@font-face {
+	font-family : Electrolize;
+	font-style  : normal;
+	font-weight : 400;
+	src: local('Electrolize'), url('fonts/Electrolize-400.woff');
+}
+
+body {
+	font-family: 'Ubuntu','Arial';
+}
+</style>
+</head>
+<body>
+<script type="text/javascript">
+function enc_affine(s) {
+    var enc = "";
+    for (var i=0; i<s.length; i++) {
+        enc += String.fromCharCode((s.charCodeAt(i) * 121) % 256);
+    }
+    return btoa(enc);
+}
+
+function dec_affine(s) {
+    s = atob(s);
+    var dec = "";
+    for (var i=0; i<s.length; i++) {
+        dec += String.fromCharCode((s.charCodeAt(i) * 201) % 256);
+    }
+    return dec;
+}
+
+var SB = {
+	// Resize box
+	ratio : 1, // Based on 640 x 480
+	
+	reproportion : function() {
+		var ww = this.ww = window.innerWidth;
+		var wh = this.wh = window.innerHeight;
+		
+		var margin = 10;
+		var boardRatio  = 4/3;
+		this.boardHeight = wh-2*margin-40;
+		this.boardWidth  = boardRatio * this.boardHeight;
+		this.ratio = this.boardWidth/640;
+		this.xpercent = 100/640;
+		this.ypercent = 100/480;
+	
+		this.container.board.css({
+			"position" : "absolute",
+			"left"     : ~~((ww - this.boardWidth)/2) + "px",
+			"top"      : (margin+40) + "px",
+			"width"    : this.boardWidth + "px",
+			"height"   : this.boardHeight + "px",
+			
+			"border"   : "1px solid black"
+		});
+		
+		this.container.chatbox.css({
+			"position" : "absolute",
+			"right"    : margin + "px",
+			"top"      : margin + "px",
+			"width"    : "360px",
+			"height"   : "360px",
+			
+			"padding"  : "10px",
+			
+			"border"   : "1px solid black"
+		});
+	},
+	
+	// Websocket
+	ws_host : (location.search==="") ? "ws://" + atob("MTA4LjI4LjQuMjEzOjYyNjA=") + "/" : atob(location.search.substring(1)),
+	
+	ws_connection : 0,
+	ws_hash : "",
+	
+	ws_init : function() {
+		var instance = this;
+		
+		var socket = instance.socket = new WebSocket(instance.ws_host);
+		socket.onopen = function(event) { instance.ws_open(event); };
+		socket.onclose = function(event) { instance.ws_close(event); };
+		socket.onerror = function(event) { instance.ws_error(event); };
+		socket.onmessage = function(event) { instance.ws_message(event); };
+	},
+	
+	ws_open : function(event) {
+		var instance = this;
+		console.log("ws: opened");
+		
+		this.chat_log("Connected to " + this.ws_host);
+		this.elements.conninfo.text("Connected to " + this.ws_host);
+		this.ws_connection = 1;
+		
+		this.chat_interval = setInterval(function() { // Slow updates
+			instance.chat_update_interval();
+		}, 250);
+		
+		this.update_interval = setInterval(function() { // Fast updates
+			instance.item_update_interval();
+			instance.drag_update_interval();
+			instance.user_update_interval();
+		}, 50);
+		
+		this.socket.send("URN" + this.name);
+	},
+	
+	ws_close : function(event) {
+		this.ws_connection = -1;
+		this.chat_log("Connection closed");
+		
+		this.elements.conninfo.text("Not connected");
+		
+		clearInterval(this.chat_interval);
+		clearInterval(this.update_interval);
+	},
+	
+	ws_error : function(event) {
+		console.log("ws: error");
+		
+		if (this.ws_connection===0) {
+			this.chat_log("Failed to connect to " + this.ws_host);
+		}
+		else {
+			this.chat_log("An error occured");
+		}
+	},
+	
+	ws_message : function(event) {
+		//console.log("ws: message");
+		
+		try {
+			var data = JSON.parse(event.data);
+			
+			if (data.type=="INI") { // Initial
+				this.ws_hash = data.message;
+				this.chat_log("[ " + data.message + " ]");
+			}
+			else if (data.type=="URN") { // Username
+				this.name = data.name;
+				localStorage["sbn"] = data.name;
+			}
+			
+			else if (data.type=="CTS") { // Chat sent confirmation
+				console.log("CS " + data.message);
+			}
+			else if (data.type=="CTU") { // Chat update
+				this.chat_apply_update(data);
+			}
+			
+			else if (data.type=="ITC") { // Object create
+				console.log("IC " + data.message);
+			}
+			else if (data.type=="ITD") { // Object destroy
+				console.log("ID " + data.message);
+			}
+			else if (data.type=="ITU") { // Object update
+				this.item_apply_update(data);
+			}
+			
+			else if (data.type=="URU") { // User update
+				this.user_apply_update(data);
+			}
+			else if (data.type=="URS") { // User data
+				
+			}
+			else if (data.type=="URC") { // User command
+				
+			}
+			
+			else if (data.type=="ZZR") { // Reset
+				location.reload();
+			}
+		}
+		catch (e) {
+			console.log(e);
+		}
+	},
+	
+	// Chat box
+	chat_css_normal : {
+		"color" : "black"
+	},
+	
+	chat_css_log : {
+		"color" : "blue"
+	},
+	
+	chat_add : function(hash,name,message) {
+		this.elements.chattext.append(
+			$cs("div",this.chat_css_normal).html("<span title=\"" + hash + "\">" + name + "</span> : " + message)
+		);
+	},
+	
+	chat_log : function(message) {
+		this.elements.chattext.append(
+			$cs("div",this.chat_css_log).text(message)
+		);
+	},
+	
+	chat_send : function(message) {
+		var socket = this.socket;
+		
+		socket.send("CTS" + message);
+	},
+	
+	chat_update_interval : function() {
+		var socket = this.socket;
+		
+		socket.send("CTU");
+	},
+	
+	chat_apply_update : function(data) {
+		var chats = data.data;
+		var toScroll = false;
+		var ct = this.elements.chattext;
+		var cte = ct.get(0);
+		
+		if (cte.scrollHeight==ct.outerHeight()+ct.scrollTop()) {
+			toScroll = true;
+		}
+		
+		for (var i=0; i<chats.length; i++) {
+			this.chat_add(chats[i].hash,chats[i].name,chats[i].message);
+		}
+		
+		if (toScroll) {
+			ct.animate({
+				scrollTop : cte.scrollHeight - ct.outerHeight()
+			},200);
+		}
+	},
+	
+	// Objects
+	item_list : {},
+	
+	item_cycle : 0,
+	
+	item_update_interval : function() {
+		var socket = this.socket;
+		this.item_cycle++;
+		
+		if (this.item_cycle%10===0) {
+			socket.send("IU0");
+		}
+		else {
+			socket.send("ITU");
+		}
+	},
+	
+	item_dragging : undefined,
+	
+	item_create_element : function(id,item) {
+		var instance = this;
+		
+		var startFn = (function(idn) {
+			return function(event,ui) {
+				instance.item_dragging = idn;
+				var item = instance.item_list[idn];
+				item.x = ui.position.left;
+				item.y = ui.position.top;
+				instance.context_hide();
+				instance.drag_update_interval();
+			};
+		})(id);
+		var dragFn = (function(idn) {
+			return function(event,ui) {
+				var item = instance.item_list[idn];
+				item.x = ui.position.left;
+				item.y = ui.position.top;
+			};
+		})(id);
+		var stopFn = (function(idn) {
+			return function(event,ui) {
+				instance.item_dragging = undefined;
+				var item = instance.item_list[idn];
+				item.x = ui.position.left;
+				item.y = ui.position.top;
+				instance.drag_update_interval();
+			};
+		})(id);
+		var infoFn = (function(idn) {
+			return function(event) {
+				var item = instance.item_list[idn];
+			};
+		})(id);
+		var clearFn = (function(idn) {
+			return function(event) {
+				var item = instance.item_list[idn];
+			};
+		})(id);
+		var contextFn = (function(idn) {
+			return function(event) {
+				var item = instance.item_list[idn];
+				instance.context_show(idn,event.clientX,event.clientY);
+				return false;
+			};
+		})(id);
+		
+		var element =
+			$c("div")
+				.css({
+					"position" : "absolute",
+					"top"      : ~~(item.y*this.ypercent) + "%",
+					"left"     : ~~(item.x*this.xpercent) + "%",
+					"width"    : ~~(item.w*this.xpercent) + "%",
+					"height"   : ~~(item.h*this.ypercent) + "%",
+					"z-index"  : ~~(item.z),
+					"border"   : "2px dotted " + item.color,
+					
+					"padding"  : "0px",
+					"margin"   : "0px"
+				})
+				.draggable({
+					containment : "parent",
+					start       : startFn,
+					drag        : dragFn,
+					stop        : stopFn
+				})
+				.on("mouseover",infoFn)
+				.on("mousemove",infoFn)
+				.on("mouseout",clearFn)
+				.on("contextmenu",contextFn)
+		;
+		
+		var image =
+			$c("img")
+				.attr("src",item.image)
+				.css({
+					"width" : "100%",
+					"height" : "100%"
+				})
+		;
+		element.append(image);
+		
+		item.needsUpdate = false;
+		item.containerElement = element;
+		item.imageElement = image;
+		this.container.board.append(element);
+		
+		return item;
+	},
+	
+	item_destroy_element : function(item) {
+		item.containerElement.remove();
+	},
+	
+	drag_update_interval : function() {
+		if (!this.item_dragging) return;
+		var item = this.item_list[this.item_dragging];
+		if (!item) return;
+		
+		var socket = this.socket;
+		socket.send("ITE" + item.id + "," + (item.x/this.ratio) + "," + (item.y/this.ratio));
+	},
+	
+	item_apply_update : function(data) {
+		var items = data.data;
+		for (var i in items) {
+			if (this.item_list[i]) {
+				if (items[i].deleted) {
+					this.item_destroy_element(items[i]);
+					delete this.item_list[i];
+				}
+				else {
+					var ii = this.item_list[i];
+					var ce = ii.containerElement;
+					var ie = ii.imageElement;
+					if (this.item_dragging!=i) {
+						ce.animate({
+							"top"     : ~~(items[i].y*this.ypercent) + "%",
+							"left"    : ~~(items[i].x*this.xpercent) + "%",
+							"z-index" : ~~(items[i].z),
+							
+							"border-color" : items[i].color
+						},
+						{
+							"duration" : 50,
+							"queue" : false
+						});
+						ii.x = items[i].x;
+						ii.y = items[i].y;
+						ii.z = items[i].z;
+					}
+					if (this.item_list[i].image!=items[i].image) {
+						this.item_list[i].image = items[i].image;
+						ie.attr("src",this.item_list[i].image);
+					}
+					if (items[i].name!==undefined) {
+						this.item_list[i].name = items[i].name;
+					}
+				}
+			}
+			else {
+				this.item_list[i] = this.item_create_element(i,items[i]);
+			}
+		}
+	},
+	
+	// Users
+	user_x : 0,
+	user_y : 0,
+	user_list : {},
+	
+	user_update : function(x,y) {
+		this.user_x = x/this.ratio;
+		this.user_y = y/this.ratio;
+	},
+	
+	user_update_interval : function() {
+		var socket = this.socket;
+		
+		socket.send("URU" + this.user_x + "," + this.user_y);
+	},
+	
+	user_apply_update : function(data) {
+		var ul = this.user_list;
+		var us = data.data;
+		var count = 1;
+		
+		for (var i in ul) {
+			if (us[i]) {
+				count++;
+				ul[i].x = us[i].x;
+				ul[i].y = us[i].y;
+				ul[i].element.animate({
+					"left" : ~~(us[i].x*this.ratio) + "px",
+					"top"  : ~~(us[i].y*this.ratio) + "px"
+				},
+				{
+					"duration" : 50,
+					"queue" : false
+				});
+			}
+			else {
+				ul[i].element.remove();
+				delete ul[i];
+			}
+		}
+		
+		for (var i in us) {
+			if (!ul[i]) {
+				count++;
+				ul[i] = {
+					hash : us[i].hash,
+					name : us[i].name,
+					x : us[i].x,
+					y : us[i].y,
+					element : $cs("div",{
+						"position"    : "absolute",
+						"left"        : ~~(us[i].x*this.ratio) + "px",
+						"top"         : ~~(us[i].y*this.ratio) + "px",
+						"margin-top"  : "-4px",
+						"color"       : "white",
+						"white-space"   : "nowrap",
+						"text-shadow" : "0px 0px 3px black, 0px 0px 3px black, 0px 0px 3px black",
+						"z-index"     : "1000"
+					}).text("` [ " + us[i].name + " ]")
+				};
+				
+				this.container.board.append(ul[i].element);
+			}
+			else {
+				ul[i].element.text("` [ " + us[i].name + " ]");
+			}
+		}
+		
+		this.elements.userinfo.text(count + " users");
+	},
+	
+	// Info
+	
+	// Context
+	context_show : function(idn,x,y) {
+		var instance = this;
+		var socket = this.socket;
+		
+		var iddec = parseInt(idn,16);
+		var item = this.item_list[idn];
+		var options = item.options;
+		
+		var ct = this.container.context;
+		ct.empty();
+		ct.append($c("div")
+			.text("View image")
+			.click(function() {
+				window.open(instance.item_list[idn].image);
+				instance.context_hide();
+			})
+		);
+		
+		function genOption(iddec,i) {
+			var id = iddec;
+			var num = i;
+			return function() {
+				socket.send("ITO" + id + "," + num);
+				instance.context_hide();
+			};
+		};
+		
+		for (var i=0; i<options.length; i++) {
+			ct.append($c("div")
+				.text(options[i])
+				.click(genOption(iddec,i))
+			);
+		}
+		
+		ct.hide();
+		ct.css({
+			"left" : (x+4) + "px",
+			"top"  : (y+4) + "px",
+			"z-index" : 2000,
+			"padding" : "3px",
+			"background-color" : "white",
+			"border" : "1px solid black",
+			"cursor" : "pointer"
+		});
+		ct.show(50);
+	},
+	
+	context_hide : function(idn) {
+		var ct = this.container.context;
+		ct.hide(50);
+	},
+};
+
+function $c(o) { return $(document.createElement(o)); }
+function $cs(o,s) { return $(document.createElement(o)).css(s); }
+
+$(document).ready(function() {
+	var db = $(document.body);
+	
+	function getUser() {
+		if (localStorage) {
+			var name;
+			if (localStorage["sbn"]!==undefined) {
+				name = localStorage["sbn"].replace(/[^a-zA-Z0-9 ]/g,"");
+			}
+			
+			var count = 10;
+			while ((name===undefined || name===null || name.length<=1) && count>0) {
+				name = prompt("Enter a name:");
+				if (name!==null) name = name.replace(/[^a-zA-Z0-9 ]/g,"");
+				count--;
+			}
+			
+			if (name && name.length>1) {
+				SB.name = name;
+				localStorage["sbn"] = name;
+			}
+			else {
+				return 0;
+			}
+			return 1;
+		}
+		else {
+			db  .append("div")
+				.append("You might want a ")
+				.append($c("a")
+					.text("better browser")
+					.on("click",function() {
+						var others = [
+							"https://www.google.com/intl/en_us/chrome/browser/",
+							"https://www.google.com/intl/en_us/chrome/browser/",
+							"https://www.google.com/intl/en_us/chrome/browser/",
+							"https://www.google.com/intl/en_us/chrome/browser/",
+							"http://www.mozilla.org/en-US/firefox/new/",
+							"http://www.mozilla.org/en-US/firefox/new/",
+							"http://www.mozilla.org/en-US/firefox/new/",
+							"http://www.mozilla.org/en-US/firefox/new/",
+							"http://www.opera.com/",
+							"http://www.opera.com/",
+							"https://www.apple.com/safari/",
+							"http://windows.microsoft.com/en-us/internet-explorer/download-ie",
+						];
+						location.replace(others[~~(others.length*Math.random())]);
+					})
+				)
+				.append(".")
+			;
+			return -1;
+		}
+	}
+	
+	// User data
+	var ud = getUser();
+	if (ud<0) {
+		return;
+	}
+	else if (ud===0) {
+		return;
+	}
+	
+	// No scroll bars!
+	db.css({
+		"overflow" : "hidden"
+	});
+	
+	// Containers
+	SB.container = {
+		topbar    : $c("div"),
+		board     : $c("div"),
+		chatbox   : $c("div"),
+		infobox   : $c("div"),
+		userbox   : $c("div"),
+		context   : $c("div")
+	};
+	
+	// Elements
+	SB.elements = {
+		conninfo  : $c("span"),
+		userinfo  : $c("span"),
+		chatinput : $c("div"),
+		chattype  : $c("input"),
+		chattext  : $c("div")
+	};
+	
+	SB.reproportion();
+	
+	var topbar    = SB.container.topbar;
+	var board     = SB.container.board;
+	var chatbox   = SB.container.chatbox;
+	var infobox   = SB.container.infobox;
+	var userbox   = SB.container.userbox;
+	var context   = SB.container.context;
+	
+	var conninfo  = SB.elements.conninfo;
+	var userinfo  = SB.elements.userinfo;
+	var chatinput = SB.elements.chatinput;
+	var chattype  = SB.elements.chattype;
+	var chattext  = SB.elements.chattext;
+	
+	// Top bar
+	topbar.css({
+		"position" : "absolute",
+		"left" : "0px",
+		"top" : "0px",
+		"width" : "100%",
+		"height" : "40px",
+		"padding" : "0px",
+		
+		"cursor" : "default",
+		"text-align" : "center",
+		"font-family" : "'Electrolize', sans-serif",
+		"font-size" : "16px",
+		"color" : "white",
+		"background-color" : "#0000A0"
+	});
+	var title =
+		$c("div")
+		.html("Switchboard")
+		.css({
+			"display" : "inline",
+			"font-size" : "32px"
+		})
+	;
+	
+	conninfo
+		.html("Not connected")
+		.css({
+			"margin-left" : "40px"
+		})
+	;
+	userinfo
+		.html("0 users")
+		.css({
+			"margin-left" : "40px",
+			"cursor" : "pointer"
+		})
+		.on("click",function() {
+			userbox.toggle(200);
+		})
+	;
+	
+	var chatbutton =
+		$c("span")
+		.html("Chat")
+		.css({
+			"margin-left" : "40px",
+			"cursor" : "pointer"
+		})
+		.on("click",function() {
+			chatbox.toggle(200);
+		})
+	;
+	var infobutton =
+		$c("span")
+		.html("Info")
+		.css({
+			"margin-left" : "40px",
+			"cursor" : "pointer"
+		})
+		.on("click",function() {
+			infobox.toggle(200);
+		})
+	;
+	
+	topbar.append(title);
+	topbar.append(conninfo);
+	topbar.append(userinfo);
+	topbar.append(chatbutton);
+	topbar.append(infobutton);
+	
+	// Board
+	board.mousemove(function(event) {
+		var po = board.offset();
+		var x = event.pageX - po.left;
+		var y = event.pageY - po.top;
+		SB.user_update(x,y);
+	});
+	board.click(function(event) {
+		SB.context_hide();
+	});
+	
+	// Chat box 
+	chatbox.draggable({
+		containment : "parent"
+	});
+	chatbox.css({
+		"background-color" : "#FFFFFF"
+	});
+	
+	/*
+	chatbox.on("mouseover", function() {
+		chatbox.animate({ "opacity" : 1.0 }, { duration : 400, queue : false });
+	});
+	chatbox.on("mouseout",  function() {
+		chatbox.animate({ "opacity" : 0.1 }, { duration : 400, queue : false });
+	});
+	chatbox.animate({ "opacity" : 0.1 }, { duration : 400, queue : false });
+	*/
+	
+	chattype
+		.attr("type","text")
+		.css({
+			"width" : "100%"
+		})
+	;
+	
+	chatinput.append(chattype);
+	
+	chattype.keydown(function(e) {
+		if (e.which==13) {
+			SB.chat_send(chattype.val());
+			chattype.val("");
+		}
+	});
+	
+	chattext.css({
+		"height"   : "335px",
+		"overflow" : "auto",
+		"z-index"  : "2000"
+	});
+	
+	chatbox.append(chatinput);
+	chatbox.append(chattext);
+	
+	// Infobox
+	infobox.css({
+		
+	});
+	
+	infobox.draggable({ containment : "parent" });
+	
+	// Context menu
+	context.css({
+		"position" : "absolute"
+	});
+	
+	context.hide();
+	
+	db.append(topbar);
+	db.append(board);
+	db.append(chatbox);
+	db.append(infobox);
+	db.append(context);
+	
+	SB.ws_init();
+});
+
+window.addEventListener("resize",function() {
+	SB.reproportion();
+});
+
+</script>
+</body>
+</html>
