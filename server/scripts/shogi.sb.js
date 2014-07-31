@@ -1,2 +1,2 @@
 // Shogi
-
+// Coming soon!
